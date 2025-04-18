@@ -1,11 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <pthread.h>
 #include <stdbool.h>
-
-#define DECK_SIZE 52
-#define RANKS 13
-#define SUITS 4
 
 //Game will track the state of the game, and give objects for players to reference
 typedef struct Game {
@@ -13,7 +10,7 @@ typedef struct Game {
     int chips_bag; //current number of chips
     int initial_bag; //initial chips per bag
     int greasy_card; //current greasy card
-    int deck[DECK_SIZE]; //ordered deck
+    int deck[52]; //ordered deck
     int deck_top; //index of "top" of deck (next card to draw)
     int curr_round; //current round #
     int curr_turn; //ID of player whose turn it is
@@ -31,7 +28,7 @@ typedef struct Game {
     pthread_mutex_t turn_mutex;
     pthread_cond_t turn_cond;
 
-    struct Player *players; //pointer to player array FIXME may not be needed?
+    struct Player *players; //pointer to player array
 } Game;
 
 typedef struct Player {
@@ -41,10 +38,12 @@ typedef struct Player {
     Game *game;
 } Player;
 
-void init_deck(Game *game, unsigned int seed);
-void shuffle_deck(Game *game, unsigned int *seed); //FIXME unsure if need to be pointers
+void init_deck(Game *game);
+void shuffle_deck(Game *game, unsigned int *seed);
+void log_deck(Game *game);
 void deal_cards(Game* game);
 void *player_func(void *arg);
+static inline unsigned int xorshift32(unsigned int *state);
 
 int main(int argc, char *argv[]) {
     if (argc != 4) {
@@ -63,7 +62,7 @@ int main(int argc, char *argv[]) {
     game.curr_turn = 0;
     game.total_rounds = game.num_players;
     game.is_round_over = false;
-    game.seed = atoi(argv[1]);
+    game.seed = atoi(argv[1]) + 1;
 
     //open logfile and error check
     game.logfile = fopen("logfile.txt", "w");
@@ -72,6 +71,8 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
     
+    init_deck(&game);
+
     pthread_mutex_init(&game.deck_mutex, NULL);
     pthread_mutex_init(&game.bag_mutex, NULL);
     pthread_mutex_init(&game.log_mutex, NULL);
@@ -97,7 +98,7 @@ int main(int argc, char *argv[]) {
         game.players[i].hand = 0; //no cards in hand before game starts
         game.players[i].seed = game.seed + i + 1;
         game.players[i].game = &game;
-        pthread_create(&threads[i], NULL, player_func, &game.players[i]); //FIXME need to test player_func
+        pthread_create(&threads[i], NULL, player_func, &game.players[i]);
     }
 
     //main continues when threads exit
@@ -116,7 +117,7 @@ int main(int argc, char *argv[]) {
     fclose(game.logfile);
     free(game.players);
     free(threads);
-    printf("success!"); //FIXME testing
+    printf("successful run!"); //FIXME delete later.
 
     return 0;
 }
@@ -132,8 +133,64 @@ void *player_func(void *arg) {
     fprintf(game->logfile, "Player %d says: This is working!", p->id + 1);
     fflush(stdout);
     fflush(game->logfile);
-    pthread_mutex_unlock(&game->log_mutex); //FIXME testing
+    pthread_mutex_unlock(&game->log_mutex); //FIXME testing delete later.
     pthread_mutex_unlock(&game->print_mutex);
 
+    pthread_mutex_lock(&game->deck_mutex); //FIXME testing log and shuffle deck
+    pthread_mutex_lock(&game->log_mutex);
+    pthread_mutex_lock(&game->print_mutex); //Only printing for debug. Wouldn't normally. 
+    shuffle_deck(game, &p->seed);
+    log_deck(game);
+    pthread_mutex_unlock(&game->print_mutex);
+    pthread_mutex_unlock(&game->log_mutex);
+    pthread_mutex_unlock(&game->deck_mutex);
+
     return NULL;
+}
+
+void init_deck(Game *game) {
+    int k = 0;
+    for (int i = 0; i < 4; i++) {
+        for (int j = 1; j < 14; j++) {
+            game->deck[k++] = j;
+        }
+    }
+    game->deck_top = 0;
+    log_deck(game); //FIXME testing
+}
+
+/* shuffle_deck does what you'd expect. Called by a single dealer
+   Note: deck must be locked and player's unique seed will be passed in. */
+void shuffle_deck(Game *game, unsigned int *seed) {
+    for (int i = 52-1; i > 0; i--)
+    {
+        unsigned int j = xorshift32(seed) % (i+1);
+        
+        int temp = game->deck[j];
+        game->deck[j] = game->deck[i];
+        game->deck[i] = temp;
+    }
+    game->deck_top = 0;
+}
+
+// Prints deck to logfile. MUST lock deck and console before using, for thread-safety.
+void log_deck(Game *game) {
+    fprintf(game->logfile, "DECK: ");
+    for (int i = 0; i < 52; i++) {
+        fprintf(game->logfile, " %i", game->deck[i]);
+    }
+    fputc('\n', game->logfile);
+    fflush(game->logfile);
+}
+
+/*This is essentially just a random number generator. Was going to use rand_r, but
+  it is unavailable on non-POSIX systems (windows). This increases portability. 
+  Cannot seed with 0, however (xor 0 is just 0). FIXME keep an eye on this. Make sure multiple runs are the same...*/
+static inline unsigned int xorshift32(unsigned int *state)
+{
+    unsigned int x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    return *state = x;
 }
