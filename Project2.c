@@ -23,9 +23,11 @@ typedef struct Game {
     FILE *logfile; //needs to be opened and closed after running.
 
     //mutexes and conditional. must be initialized and destroyed in main.
+    //Additionally, mutex ordering MUST be maintained. deck > bag > log > print...
     pthread_mutex_t deck_mutex;
     pthread_mutex_t bag_mutex;
     pthread_mutex_t log_mutex;
+    pthread_mutex_t print_mutex;
     pthread_mutex_t turn_mutex;
     pthread_cond_t turn_cond;
 
@@ -69,7 +71,69 @@ int main(int argc, char *argv[]) {
         perror("Unable to open log file."); //perror writes to stderror rather than stdout
         exit(EXIT_FAILURE);
     }
-    fprintf(game.logfile, "Working?"); //FIXME testing
     
+    pthread_mutex_init(&game.deck_mutex, NULL);
+    pthread_mutex_init(&game.bag_mutex, NULL);
+    pthread_mutex_init(&game.log_mutex, NULL);
+    pthread_mutex_init(&game.turn_mutex, NULL);
+    pthread_cond_init(&game.turn_cond, NULL);
+    pthread_mutex_init(&game.print_mutex, NULL);
+
+    //Allocating player space and creating threads for each
+    game.players = malloc(sizeof(Player) * game.num_players);
+    if(!game.players) {
+        perror("Unable to allocate space for players.");
+        exit(EXIT_FAILURE);
+    }
+
+    pthread_t *threads = malloc(sizeof(pthread_t) * game.num_players);
+    if(!threads) {
+        perror("Unable to allocate space for threads.");
+        exit(EXIT_FAILURE);
+    }
+
+    for (int i = 0; i < game.num_players; i++) {
+        game.players[i].id = i;
+        game.players[i].hand = 0; //no cards in hand before game starts
+        game.players[i].seed = game.seed + i + 1;
+        game.players[i].game = &game;
+        pthread_create(&threads[i], NULL, player_func, &game.players[i]); //FIXME need to test player_func
+    }
+
+    //main continues when threads exit
+    for (int i = 0; i < game.num_players; i++) {
+        pthread_join(threads[i], NULL);
+    }
+    
+    //After game finishes, destroy/close and exit:
+    pthread_mutex_destroy(&game.deck_mutex);
+    pthread_mutex_destroy(&game.bag_mutex);
+    pthread_mutex_destroy(&game.log_mutex);
+    pthread_mutex_destroy(&game.turn_mutex);
+    pthread_cond_destroy(&game.turn_cond);
+    pthread_mutex_destroy(&game.print_mutex);
+
+    fclose(game.logfile);
+    free(game.players);
+    free(threads);
+    printf("success!"); //FIXME testing
+
+    return 0;
 }
 
+void *player_func(void *arg) {
+    Player *p = (Player *)arg;
+    Game *game = p->game;
+
+    pthread_mutex_lock(&game->print_mutex);
+    printf("got print_mutex\n"); 
+    pthread_mutex_lock(&game->log_mutex);
+    fprintf(stdout, "Player %d says: This is working!", p->id + 1);
+    fprintf(game->logfile, "Player %d says: This is working!", p->id + 1);
+    fflush(stdout);
+    fflush(game->logfile);
+    pthread_mutex_unlock(&game->log_mutex); //FIXME testing
+    pthread_mutex_unlock(&game->print_mutex);
+
+    return NULL;
+}
