@@ -10,20 +10,23 @@ typedef struct Game {
     int chips_bag; //current number of chips
     int initial_bag; //initial chips per bag
     int greasy_card; //current greasy card
-    int deck[52]; //ordered deck
+    int deck[52*2]; //ordered deck. Space to grow w/ discards. NOTE: certainly breaks above certain player count.
     int deck_top; //index of "top" of deck (next card to draw)
     int deck_bot; //index of last card. For discarding purposes.
     int curr_round; //current round #
-    int curr_turn; //ID of player whose turn it is
+    int curr_turn; //ID of player whose turn it is (0-indexed)
     int total_rounds; // = num_players by defn.
-    bool is_round_over; //signals if there was a preceding winner
     int round_winner; //-1 if no winner yet
-    unsigned int seed;
+    int is_dealer_done; //signals if dealer has finished and players can continue.
+    unsigned int globalSeed; //used to seed other players.
     int players_done; //tracks # of players finished with round.
     FILE *logfile; //needs to be opened and closed after running.
 
     //FIXME add mutexes and conditional. must be initialized and destroyed in main.
     //Additionally, mutex ordering MUST be maintained. deck > bag > log > print...
+    pthread_mutex_t turn_mut;
+    pthread_cond_t turn_cond;
+
 
     struct Player *players; //pointer to player array
 } Game;
@@ -40,6 +43,7 @@ void shuffle_deck(Game *game, unsigned int *seed);
 void log_deck(Game *game);
 void deal_cards(Game* game);
 void *player_func(void *arg);
+void dealer_responsiblities(Game *game);
 static inline unsigned int xorshift32(unsigned int *state);
 
 int main(int argc, char *argv[]) {
@@ -55,13 +59,14 @@ int main(int argc, char *argv[]) {
     game.initial_bag = atoi(argv[3]);
     game.greasy_card = 0; 
     game.deck_top = 0;
-    game.deck_bottom = 52;
+    game.deck_bot = 52;
     game.curr_round = 0;
     game.curr_turn = 0;
     game.total_rounds = game.num_players;
-    game.is_round_over = false;
-    game.seed = atoi(argv[1]) + 1;
+    game.round_winner = -1;
+    game.globalSeed = atoi(argv[1]) + 1;
     game.players_done = 0;
+    game.is_dealer_done = false;
 
 
     //open logfile and error check
@@ -72,7 +77,8 @@ int main(int argc, char *argv[]) {
     }
     
     //FIXME MUTEX initialization
-
+    pthread_mutex_init(&game.turn_mut, NULL);
+    pthread_cond_init(&game.turn_cond, NULL);
 
     //Allocating player space and creating threads for each
     game.players = malloc(sizeof(Player) * game.num_players);
@@ -90,7 +96,7 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < game.num_players; i++) {
         game.players[i].id = i;
         game.players[i].hand = 0; //no cards in hand before game starts
-        game.players[i].seed = game.seed + i + 1;
+        game.players[i].seed = game.globalSeed + i + 1;
         game.players[i].game = &game;
         pthread_create(&threads[i], NULL, player_func, &game.players[i]);
     }
@@ -117,11 +123,45 @@ the “Greasy Card”
 (4) opening the first bag of potato chips, and
 (5) waiting for the round to end */
 void *player_func(void *arg) {
+    Player *p = (Player *)arg;
+    Game *game = p->game;
    //FIXME I'M BAD!!!!! Implement player logic
+   //if dealer -> go to dealer func.
+   //dealer func must initialize deck, shuffle, then wait for round to be over.
+   //after last player plays or loses, dealer resets state.
+   //FIXME how to handle the after-round print statements? Have players wait on dealer signaling game is done? Yes :thumbs up:
+
+   //while you are not the dealer and the dealer is not done, wait on dealer.
+   pthread_mutex_lock(&game->turn_mut);
+   while (p->id != game->curr_round && game->is_dealer_done == false) {
+    printf("Player %i waiting on dealer.\n", p->id + 1); //FIXME testing.
+    fprintf(game->logfile, "Player %i waiting on dealer.\n", p->id + 1);
+    fflush(game->logfile);
+    pthread_cond_wait(&game->turn_cond, &game->turn_mut);
+   } 
+   if(p->id == game->curr_round) {
+    dealer_responsiblities(game); //FIXME implement dealer function.
+   }
+   //if NOT dealer, wait until dealer broadcasts.
+   //then, if it's your turn, draw card.
+   //compare card. set win state if applicable.
+   //then: discard and release.
+   
+   //after gameplay loop, eat chip
+   //also, increment player finished counter (just number of players)
+   //last player in wakes dealer and then all wait.
+   //Dealer then prints who won, resets state, exits dealer loop, and enters normal gameplay loop.
 }
 
+void dealer_responsiblities(Game *game) {
+    printf("made it to dealer");
 
+
+    pthread_cond_broadcast(&game->turn_cond);
+    pthread_mutex_unlock(&game->turn_mut);
+}
 //FIXME add mutex locks TO the functions
+//FIXME double-check these jive with updated deck sizing.
 void init_deck(Game *game) {
     int k = 0;
     for (int i = 0; i < 4; i++) {
@@ -130,6 +170,7 @@ void init_deck(Game *game) {
         }
     }
     game->deck_top = 0;
+    game->deck_bot = 52;
 }
 
 /* shuffle_deck does what you'd expect. Called by a single dealer
