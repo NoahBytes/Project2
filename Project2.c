@@ -16,6 +16,7 @@ typedef struct Game {
     int curr_turn; //ID of player whose turn it is
     int total_rounds; // = num_players by defn.
     bool is_round_over; //signals if there was a preceding winner
+    int round_winner; //-1 if no winner yet
     unsigned int seed;
     FILE *logfile; //needs to be opened and closed after running.
 
@@ -122,28 +123,46 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
+/* Dealer: (1) shuffling the deck of cards
+(2) choosing and displaying a single chosen at random called
+the “Greasy Card”
+(3) dealing a single card to each player
+(4) opening the first bag of potato chips, and
+(5) waiting for the round to end */
 void *player_func(void *arg) {
     Player *p = (Player *)arg;
     Game *game = p->game;
 
-    pthread_mutex_lock(&game->print_mutex);
-    printf("got print_mutex\n"); 
-    pthread_mutex_lock(&game->log_mutex);
-    fprintf(stdout, "Player %d says: This is working!", p->id + 1);
-    fprintf(game->logfile, "Player %d says: This is working!", p->id + 1);
-    fflush(stdout);
-    fflush(game->logfile);
-    pthread_mutex_unlock(&game->log_mutex); //FIXME testing delete later.
-    pthread_mutex_unlock(&game->print_mutex);
+    while(game->curr_round < game->total_rounds) {
+        //FIXME dealer logic. Must signal players
+        if (p->id == game->curr_round) {
+            //Shuffle deck and select greasy card from top.
+            pthread_mutex_lock(&game->deck_mutex);
+            shuffle_deck(game, &p->seed);
 
-    pthread_mutex_lock(&game->deck_mutex); //FIXME testing log and shuffle deck
-    pthread_mutex_lock(&game->log_mutex);
-    pthread_mutex_lock(&game->print_mutex); //Only printing for debug. Wouldn't normally. 
-    shuffle_deck(game, &p->seed);
-    log_deck(game);
-    pthread_mutex_unlock(&game->print_mutex);
-    pthread_mutex_unlock(&game->log_mutex);
-    pthread_mutex_unlock(&game->deck_mutex);
+            game->greasy_card = game->deck[game->deck_top];
+            game->deck_top++;
+            
+            pthread_mutex_lock(&game->log_mutex);
+            log_deck(game);
+            fprintf(game->logfile, "Greasy card is: %i\n", game->greasy_card);
+            pthread_mutex_unlock(&game->log_mutex);
+
+            deal_cards(game);
+
+            pthread_mutex_lock(&game->turn_mutex);
+            game->is_round_over = false;
+            game->round_winner = -1;
+            game->current_turn = (p->id + 1) % game->num_players;
+            pthread_cond_broadcast(&game->turn_cond);
+            pthread_mutex_unlock(&game->turn_mutex);
+            pthread_mutex_unlock(&game->deck_mutex);
+
+        }
+        break; //FIXME debugging
+        //normal player logic.
+        //print hand when it's their turn
+    }
 
     return NULL;
 }
@@ -156,7 +175,6 @@ void init_deck(Game *game) {
         }
     }
     game->deck_top = 0;
-    log_deck(game); //FIXME testing
 }
 
 /* shuffle_deck does what you'd expect. Called by a single dealer
@@ -193,4 +211,11 @@ static inline unsigned int xorshift32(unsigned int *state)
     x ^= x >> 17;
     x ^= x << 5;
     return *state = x;
+}
+
+void deal_cards(Game* game) {
+    for (int i = 0; i < game->num_players; i++) {
+        game->players[i].hand = game->deck[game->deck_top];
+        game->deck_top++;
+    }
 }
