@@ -232,7 +232,11 @@ static inline unsigned int xorshift32(unsigned int *state)
     return *state = x;
 }
 
+//set greasy cards and deal cards FIXME set greasy
 void deal_cards(Game* game, int id) {
+    game->greasy_card = game->deck[game->deck_top];
+    game->deck_top++;
+    
     for (int i = 0; i < game->num_players; i++) {
         if(i != id) { //Excluding dealer from dealing, deal cards to each player.
             game->players[i].hand = game->deck[game->deck_top];
