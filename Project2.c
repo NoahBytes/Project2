@@ -48,6 +48,7 @@ void log_deck(Game *game);
 void deal_cards(Game* game, int id);
 void draw_and_compare(Game* game, Player *p);
 void discard(Game *game, Player *p, int drawn);
+void eat_hot_chip(Game *game, Player *p);
 void *player_func(void *arg);
 void dealer_responsiblities(Game *game, Player *p);
 static inline unsigned int xorshift32(unsigned int *state);
@@ -168,21 +169,29 @@ void *player_func(void *arg) {
     //draw card. compare card. set win state if applicable. discard if not.
     draw_and_compare(game, p);
    }
-   else {
-    //print im lsoer FIXME implement
-   }
-    //increment curr_turn % players. release mutex.
+
+   //increment curr_turn % players. release mutex.
+   pthread_mutex_lock(&game->turn_mut);
+   game->curr_turn = (game->curr_turn + 1) % game->num_players;
+   pthread_cond_broadcast(&game->turn_cond);
+   pthread_mutex_unlock(&game->turn_mut);
    
+   //TODO: eat hot chip. wait for numplayers and then broadcast to dealer.... what next what next.
+   eat_hot_chip(game, p);
+
    //after gameplay loop, eat chip
    //also, increment player finished counter (just number of players)
    //last player in wakes dealer and then all wait.
 }
 
-void dealer_responsiblities(Game *game, Player *p) {
+//FIXME: dealer needs to open bag of hot chips.
+void dealer_responsiblities(Game *game, Player *p) { //FIXME -> only deal cards on round 1
     //dealer func must initialize deck, shuffle, then wait for round to be over.
     //after last player plays or loses, dealer resets state.
     printf("DEBUG: Player %i made it to dealer", p->id + 1); //FIXME debugging
-    init_deck(game);
+    if (game->curr_round == 0) {
+        init_deck(game);
+    }
     shuffle_deck(game, &p->seed);
     deal_cards(game, p->id);
 
@@ -191,7 +200,6 @@ void dealer_responsiblities(Game *game, Player *p) {
     game->is_dealer_done = true;
 
     pthread_cond_broadcast(&game->dealer_cond);
-    pthread_mutex_unlock(&game->dealer_mut);
 
     //while players are still playing, go to sleep. 
     pthread_mutex_lock(&game->done_mut);
@@ -199,6 +207,7 @@ void dealer_responsiblities(Game *game, Player *p) {
         printf("DEBUG: dealer going to sleep");
         pthread_cond_wait(&game->done_cond, &game->done_mut);
     }
+    pthread_mutex_unlock(&game->done_mut);
 
     printf("DEBUG: dealer waking up! resetting state, etc etc...");
     //FIXME finish implementing:
@@ -279,6 +288,7 @@ void draw_and_compare(Game* game, Player *p) {
     int drawn_card = game->deck[game->deck_top];
     game->deck_top = (game->deck_top + 1) % 104;
     fprintf(game->logfile, "Player %i: draws %i \n", p->id + 1, drawn_card);
+    fflush(game->logfile);
 
     if (drawn_card == game->greasy_card || p->hand == game->greasy_card) {
         game->round_winner == p->id; //declare winner and continue
@@ -286,10 +296,23 @@ void draw_and_compare(Game* game, Player *p) {
     else {
         discard(game, p, drawn_card); //or discard.
     }
-
-    fflush(game->logfile);
+    printf("DEBUG: Finished drawing and comparing!");
 }
 
 //TODO implement
 void discard(Game *game, Player *p, int drawn){
+    int discard = xorshift32(&p->seed);
+    if (discard % 2 == 0) { //keep hand, discard drawn.
+        game->deck[game->deck_bot] == drawn;
+        game->deck_bot = (game->deck_bot + 1) % 104;
+        discard = drawn;
+    }
+    else { //keep drawn, discard hand.
+        game->deck[game->deck_bot] == p->hand;
+        game->deck_bot = (game->deck_bot + 1) % 104;
+        discard = p->hand;
+        p->hand = drawn;
+    }
+    fprintf(game->logfile, "Player %i: discards %i at random\n", p->id + 1, discard);
+    fflush(game->logfile);
 }
