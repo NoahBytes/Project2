@@ -40,6 +40,7 @@ typedef struct Player {
     int id; //0-indexed, but print as n+1
     int hand; //current card. won't hold both for long so only 1.
     unsigned int seed; //unique to each player. FIXME needs to be Pointer (?)
+    bool done; //FIXME NEEDS TO BE RESET EACH ROUND!!! IMPORTANT!!!
     Game *game;
 } Player;
 
@@ -111,6 +112,7 @@ int main(int argc, char *argv[]) {
         game.players[i].hand = 0; //no cards in hand before game starts
         game.players[i].seed = game.globalSeed + i + 1;
         game.players[i].game = &game;
+        game.players[i].done = false;
         pthread_create(&threads[i], NULL, player_func, &game.players[i]);
     }
 
@@ -189,7 +191,10 @@ void *player_func(void *arg) {
 
    pthread_mutex_lock(&game->done_mut);
    while(game->round_reset != true) {
-    game->players_done++;
+    if (p->done == false) {
+        game->players_done++;
+        p->done = true;
+    }
     fprintf(game->logfile, "DEBUG: Player %i made it to done player's section", p->id + 1);
     //if last player played, wake up dealer so they can reset state and round.
     if (game->players_done == game->num_players - 1) {
