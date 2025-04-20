@@ -43,7 +43,7 @@ void shuffle_deck(Game *game, unsigned int *seed);
 void log_deck(Game *game);
 void deal_cards(Game* game);
 void *player_func(void *arg);
-void dealer_responsiblities(Game *game);
+void dealer_responsiblities(Game *game, Player *p);
 static inline unsigned int xorshift32(unsigned int *state);
 
 int main(int argc, char *argv[]) {
@@ -126,21 +126,19 @@ void *player_func(void *arg) {
     Player *p = (Player *)arg;
     Game *game = p->game;
    //FIXME I'M BAD!!!!! Implement player logic
-   //if dealer -> go to dealer func.
-   //dealer func must initialize deck, shuffle, then wait for round to be over.
-   //after last player plays or loses, dealer resets state.
    //FIXME how to handle the after-round print statements? Have players wait on dealer signaling game is done? Yes :thumbs up:
 
    //while you are not the dealer and the dealer is not done, wait on dealer.
    pthread_mutex_lock(&game->turn_mut);
    while (p->id != game->curr_round && game->is_dealer_done == false) {
-    printf("Player %i waiting on dealer.\n", p->id + 1); //FIXME testing.
-    fprintf(game->logfile, "Player %i waiting on dealer.\n", p->id + 1);
+    printf("DEBUG: Player %i waiting on dealer.\n", p->id + 1); //FIXME testing.
+    fprintf(game->logfile, "DEBUG: Player %i waiting on dealer.\n", p->id + 1);
     fflush(game->logfile);
     pthread_cond_wait(&game->turn_cond, &game->turn_mut);
    } 
+   //if dealer -> go to dealer func.
    if(p->id == game->curr_round) {
-    dealer_responsiblities(game); //FIXME implement dealer function.
+    dealer_responsiblities(game, p); //FIXME implement dealer function.
    }
    //if NOT dealer, wait until dealer broadcasts.
    //then, if it's your turn, draw card.
@@ -153,14 +151,18 @@ void *player_func(void *arg) {
    //Dealer then prints who won, resets state, exits dealer loop, and enters normal gameplay loop.
 }
 
-void dealer_responsiblities(Game *game) {
-    printf("made it to dealer");
-
+void dealer_responsiblities(Game *game, Player *p) {
+    //dealer func must initialize deck, shuffle, then wait for round to be over.
+    //after last player plays or loses, dealer resets state.
+    printf("DEBUG: Player %i made it to dealer", p->id + 1); //FIXME debugging
+    init_deck(game);
+    shuffle_deck(game, &p->seed);
+    deal_cards(game);
 
     pthread_cond_broadcast(&game->turn_cond);
     pthread_mutex_unlock(&game->turn_mut);
 }
-//FIXME add mutex locks TO the functions
+
 //FIXME double-check these jive with updated deck sizing.
 void init_deck(Game *game) {
     int k = 0;
@@ -169,8 +171,16 @@ void init_deck(Game *game) {
             game->deck[k++] = j;
         }
     }
+    for (int i = 52; i < 104; i++) {
+        game->deck[i] = 0;
+    }
     game->deck_top = 0;
     game->deck_bot = 52;
+
+    printf("DEBUG:"); //FIXME testing init_deck
+    for (int i = 0; i < 104; i++) {
+        printf("%i ", game->deck[i]);
+    }
 }
 
 /* shuffle_deck does what you'd expect. Called by a single dealer
@@ -185,6 +195,8 @@ void shuffle_deck(Game *game, unsigned int *seed) {
         game->deck[i] = temp;
     }
     game->deck_top = 0;
+
+    log_deck(game);
 }
 
 // Prints deck to logfile. MUST lock deck and console before using, for thread-safety.
