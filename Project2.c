@@ -41,7 +41,7 @@ typedef struct Player {
 void init_deck(Game *game);
 void shuffle_deck(Game *game, unsigned int *seed);
 void log_deck(Game *game);
-void deal_cards(Game* game);
+void deal_cards(Game* game, int id);
 void *player_func(void *arg);
 void dealer_responsiblities(Game *game, Player *p);
 static inline unsigned int xorshift32(unsigned int *state);
@@ -157,13 +157,13 @@ void dealer_responsiblities(Game *game, Player *p) {
     printf("DEBUG: Player %i made it to dealer", p->id + 1); //FIXME debugging
     init_deck(game);
     shuffle_deck(game, &p->seed);
-    deal_cards(game);
+    deal_cards(game, p->id);
 
     pthread_cond_broadcast(&game->turn_cond);
     pthread_mutex_unlock(&game->turn_mut);
 }
 
-//FIXME double-check these jive with updated deck sizing.
+//Initializes deck with 52 cards. 4 suits, 13 cards each suit. 0's out 52 empty spaces.
 void init_deck(Game *game) {
     int k = 0;
     for (int i = 0; i < 4; i++) {
@@ -176,11 +176,6 @@ void init_deck(Game *game) {
     }
     game->deck_top = 0;
     game->deck_bot = 52;
-
-    printf("DEBUG:"); //FIXME testing init_deck
-    for (int i = 0; i < 104; i++) {
-        printf("%i ", game->deck[i]);
-    }
 }
 
 /* shuffle_deck does what you'd expect. Called by a single dealer
@@ -202,7 +197,7 @@ void shuffle_deck(Game *game, unsigned int *seed) {
 // Prints deck to logfile. MUST lock deck and console before using, for thread-safety.
 void log_deck(Game *game) {
     fprintf(game->logfile, "DECK: ");
-    for (int i = 0; i < 52; i++) {
+    for (int i = game->deck_top; i < game->deck_bot; i++) {
         fprintf(game->logfile, " %i", game->deck[i]);
     }
     fputc('\n', game->logfile);
@@ -221,9 +216,11 @@ static inline unsigned int xorshift32(unsigned int *state)
     return *state = x;
 }
 
-void deal_cards(Game* game) {
+void deal_cards(Game* game, int id) {
     for (int i = 0; i < game->num_players; i++) {
-        game->players[i].hand = game->deck[game->deck_top];
-        game->deck_top = (game->deck_top + 1) % 52;
+        if(i != id) { //Excluding dealer from dealing, deal cards to each player.
+            game->players[i].hand = game->deck[game->deck_top];
+            game->deck_top = (game->deck_top + 1) % 104;
+        }
     }
 }
