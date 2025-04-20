@@ -26,6 +26,8 @@ typedef struct Game {
     //Additionally, mutex ordering MUST be maintained. deck > bag > log > print...
     pthread_mutex_t turn_mut;
     pthread_cond_t turn_cond;
+    pthread_mutex_t done_mut;
+    pthread_cond_t done_cond;
 
 
     struct Player *players; //pointer to player array
@@ -76,9 +78,11 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
     
-    //FIXME MUTEX initialization
+    //FIXME MUTEX, cond initialization
     pthread_mutex_init(&game.turn_mut, NULL);
     pthread_cond_init(&game.turn_cond, NULL);
+    pthread_mutex_init(&game.done_mut, NULL);
+    pthread_cond_init(&game.done_cond, NULL);
 
     //Allocating player space and creating threads for each
     game.players = malloc(sizeof(Player) * game.num_players);
@@ -138,7 +142,7 @@ void *player_func(void *arg) {
    } 
    //if dealer -> go to dealer func.
    if(p->id == game->curr_round) {
-    dealer_responsiblities(game, p); //FIXME implement dealer function.
+    dealer_responsiblities(game, p);
    }
    //if NOT dealer, wait until dealer broadcasts.
    //then, if it's your turn, draw card.
@@ -148,7 +152,6 @@ void *player_func(void *arg) {
    //after gameplay loop, eat chip
    //also, increment player finished counter (just number of players)
    //last player in wakes dealer and then all wait.
-   //Dealer then prints who won, resets state, exits dealer loop, and enters normal gameplay loop.
 }
 
 void dealer_responsiblities(Game *game, Player *p) {
@@ -161,6 +164,19 @@ void dealer_responsiblities(Game *game, Player *p) {
 
     pthread_cond_broadcast(&game->turn_cond);
     pthread_mutex_unlock(&game->turn_mut);
+
+    //while players are still playing, go to sleep. 
+    pthread_mutex_lock(&game->done_mut);
+    while(game->players_done != game->num_players - 1) {
+        printf("DEBUG: dealer going to sleep");
+        pthread_cond_wait(&game->done_cond, &game->done_mut);
+    }
+
+    printf("DEBUG: dealer waking up! resetting state, etc etc...");
+    //FIXME finish implementing:
+    //last player in wakes dealer and then all wait.
+    //Dealer then prints who won, resets state, exits dealer loop, and enters normal gameplay loop.
+
 }
 
 //Initializes deck with 52 cards. 4 suits, 13 cards each suit. 0's out 52 empty spaces.
