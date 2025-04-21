@@ -17,7 +17,6 @@ typedef struct Game {
     int curr_turn; //ID of player whose turn it is (0-indexed)
     int total_rounds; // = num_players by defn.
     int round_winner; //-1 if no winner yet
-    bool round_reset; //true when dealer has finished resetting round state.
     int is_dealer_done; //signals if dealer has finished and players can continue.
     unsigned int globalSeed; //used to seed other players.
     int players_done; //tracks # of players finished with round.
@@ -31,6 +30,7 @@ typedef struct Game {
     pthread_cond_t done_cond;
     pthread_mutex_t dealer_mut;
     pthread_cond_t dealer_cond;
+    pthread_barrier_t players_done_bar;
 
 
     struct Player *players; //pointer to player array
@@ -76,8 +76,6 @@ int main(int argc, char *argv[]) {
     game.globalSeed = atoi(argv[1]) + 1;
     game.players_done = 0;
     game.is_dealer_done = false;
-    bool round_reset = false;
-
 
     //open logfile and error check
     game.logfile = fopen("logfile.txt", "w");
@@ -93,6 +91,8 @@ int main(int argc, char *argv[]) {
     pthread_cond_init(&game.done_cond, NULL);
     pthread_mutex_init(&game.dealer_mut, NULL);
     pthread_cond_init(&game.dealer_cond, NULL);
+    pthread_barrier_init(&game.players_done_bar, NULL, game.num_players);
+
 
     //Allocating player space and creating threads for each
     game.players = malloc(sizeof(Player) * game.num_players);
@@ -143,67 +143,68 @@ void *player_func(void *arg) {
    //FIXME I'M BAD!!!!! Implement player logic
    //FIXME how to handle the after-round print statements? Have players wait on dealer signaling game is done? Yes :thumbs up:
 
-   //while you are not the dealer and the dealer is not done, wait on dealer.
-   pthread_mutex_lock(&game->dealer_mut);
-   while (p->id != game->curr_round && game->is_dealer_done == false) {
-    printf("DEBUG: Player %i waiting on dealer.\n", p->id + 1); //FIXME testing.
-    pthread_cond_wait(&game->dealer_cond, &game->dealer_mut);
-   } 
-   pthread_mutex_unlock(&game->dealer_mut);
+   while(game->curr_round < game->total_rounds) {
+       //while you are not the dealer and the dealer is not done, wait on dealer.
+        pthread_mutex_lock(&game->dealer_mut);
+        while (p->id != game->curr_round && game->is_dealer_done == false) {
+            printf("DEBUG: Player %i waiting on dealer.\n", p->id + 1); //FIXME testing.
+            pthread_cond_wait(&game->dealer_cond, &game->dealer_mut);
+        } 
+        pthread_mutex_unlock(&game->dealer_mut);
 
-   //if dealer -> go to dealer func.
-   //trapped there until end of round.
-   if(p->id == game->curr_round) {
-    dealer_responsiblities(game, p);
-   }
+        //if dealer -> go to dealer func.
+        //trapped there until end of round.
+        if(p->id == game->curr_round) {
+            dealer_responsiblities(game, p);
+        }
+        else { //Normal player loop.
+            //if it's not your turn, wait until it is.
+            pthread_mutex_lock(&game->turn_mut);
+            while (p->id != game->curr_turn) {
+                printf("DEBUG: Player %i waiting on turn.\n", p->id + 1);
+                pthread_cond_wait(&game->turn_cond, &game->turn_mut);
+            }
+            pthread_mutex_unlock(&game->turn_mut);
+            printf("DEBUG: Player %i proceeding to turn.\n", p->id + 1); //FIXME debug
 
-   //if it's not your turn, wait until it is.
-   pthread_mutex_lock(&game->turn_mut);
-   while (p->id != game->curr_turn) {
-    printf("DEBUG: Player %i waiting on turn.\n", p->id + 1);
-    pthread_cond_wait(&game->turn_cond, &game->turn_mut);
-   }
-   pthread_mutex_unlock(&game->turn_mut);
-   printf("DEBUG: Player %i proceeding to turn.\n", p->id + 1); //FIXME debug
+            //turn mutex is locked here. Nobody else is printing or playing. Safely manipulate deck and logfile until released.
+            if (game->round_winner == -1) {
+                printf("DEBUG: Player %i made it to turn loop\n", p->id + 1); //FIXME debug
+                //draw card. compare card. set win state if applicable. discard if not.
+                draw_and_compare(game, p);
+            }
+            else {
+                printf("DEBUG: Player %i loses :(\n", p->id);
+            }
+            //increment curr_turn % players. release mutex.
+            pthread_mutex_lock(&game->turn_mut);
+            game->curr_turn = (game->curr_turn + 1) % game->num_players;
+            pthread_cond_broadcast(&game->turn_cond);
+            pthread_mutex_unlock(&game->turn_mut); //NOTE/Potential FIXME: Last player enters dealers turn......
+            
+            //TODO: eat hot chip. wait for numplayers and then broadcast to dealer.... what next what next.
+            //FIXME need to implement printing protections
+            //eat_hot_chip(game, p);
 
+            //dealer is finished dealing and round is over. Dealer wakes to reset state.
+            pthread_barrier_wait(&game->players_done_bar); //I could've abused barriers way more in this program. Tried not to. Very hard.
+            } //dealer exits here:
 
-   //turn mutex is locked here. Nobody else is printing or playing. Safely manipulate deck and logfile until released.
-   if (game->round_winner == -1) {
-    printf("DEBUG: Player %i made it to turn loop\n", p->id + 1); //FIXME debug
-    //draw card. compare card. set win state if applicable. discard if not.
-    draw_and_compare(game, p);
-   }
-   else {
-    printf("DEBUG: Player %i loses :(\n", p->id);
-   }
-   //increment curr_turn % players. release mutex.
-   pthread_mutex_lock(&game->turn_mut);
-   game->curr_turn = (game->curr_turn + 1) % game->num_players;
-   pthread_cond_broadcast(&game->turn_cond);
-   pthread_mutex_unlock(&game->turn_mut);
-   
-   //TODO: eat hot chip. wait for numplayers and then broadcast to dealer.... what next what next.
-   //FIXME need to implement printing protections
-   //eat_hot_chip(game, p);
+        if (p->id == game->curr_round) {
+            printf("DEBUG: dealer resetting state.");
+            //FIXME finish implementing:
+            game->curr_round++;
+            game->curr_turn = p->id + 1;
+            //game->round_winner = -1; //FIXME This is a problem. printing before or after? Different way to reset? who knows.
+            game->players_done = 0;
+            game->is_dealer_done = false;
+        }
 
-   //after gameplay loop, eat chip
-   //also, increment player finished counter (just number of players)
-
-   pthread_mutex_lock(&game->done_mut);
-   while(game->round_reset != true) {
-    if (p->done == false) {
-        game->players_done++;
-        p->done = true;
+        //wait for dealer to reset state.
+        pthread_barrier_wait(&game->players_done_bar);
     }
-    fprintf(game->logfile, "DEBUG: Player %i made it to done player's section", p->id + 1);
-    //if last player played, wake up dealer so they can reset state and round.
-    if (game->players_done == game->num_players - 1) {
-        pthread_cond_broadcast(&game->done_cond);
-    }
-    pthread_cond_wait(&game->done_cond, &game->done_mut);
-   }
-   pthread_mutex_unlock(&game->done_mut);
-   //last player in wakes dealer and then all wait.
+
+   printf("DEBUG: Player %i exiting...\n", p->id + 1); //FIXME dealer is able to exit immediately after turn.
 }
 
 //FIXME: dealer needs to open bag of hot chips.
@@ -228,17 +229,9 @@ void dealer_responsiblities(Game *game, Player *p) {
     pthread_mutex_unlock(&game->dealer_mut);
 
     //while players are still playing, go to sleep. 
-    pthread_mutex_lock(&game->done_mut);
-    while(game->players_done != game->num_players - 1) {
-        printf("DEBUG: Players done = %i which is not %i. dealer going to sleep", game->players_done, game->num_players - 1);
-        pthread_cond_wait(&game->done_cond, &game->done_mut); //FIXME overcounts when broadcasting to the dealer.
-    }
-    pthread_mutex_unlock(&game->done_mut);
+    pthread_barrier_wait(&game->players_done_bar);
 
-    printf("DEBUG: dealer waking up! resetting state, etc etc...");
-    //FIXME finish implementing:
-    //last player in wakes dealer and then all wait.
-    //Dealer then prints who won, resets state, exits dealer loop, and enters normal gameplay loop.
+    printf("DEBUG: dealer waking up! Continuing to normal thread to reset state.");
 
 }
 
@@ -318,6 +311,8 @@ void draw_and_compare(Game* game, Player *p) {
 
     if (drawn_card == game->greasy_card || p->hand == game->greasy_card) {
         game->round_winner == p->id; //declare winner and continue
+        fprintf(game->logfile, "Player %i: hand (%i, %i) <> Greasy card is %i",
+                p->id + 1, p->hand, drawn_card, game->greasy_card);
     }
     else {
         discard(game, p, drawn_card); //or discard.
