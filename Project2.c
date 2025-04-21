@@ -108,7 +108,6 @@ int main(int argc, char *argv[]) {
         game.players[i].hand = 0; //no cards in hand before game starts
         game.players[i].seed = game.globalSeed + i + 1;
         game.players[i].game = &game;
-        game.players[i].done = false;
         pthread_create(&threads[i], NULL, player_func, &game.players[i]);
     }
 
@@ -143,7 +142,7 @@ void *player_func(void *arg) {
     Player *p = (Player *)arg;
     Game *game = p->game;
 
-   while(game->curr_round < game->total_rounds) {
+   while(game->curr_round <= game->total_rounds) {
        //while you are not the dealer and the dealer is not done, wait on dealer.
         pthread_mutex_lock(&game->dealer_mut);
         while (p->id != game->curr_round && game->is_dealer_done == false) {
