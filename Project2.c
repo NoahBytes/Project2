@@ -89,7 +89,6 @@ int main(int argc, char *argv[]) {
     pthread_barrier_init(&game.players_done_bar, NULL, game.num_players);
     pthread_mutex_init(&game.chips_mut, NULL);
 
-
     //Allocating player space and creating threads for each
     game.players = malloc(sizeof(Player) * game.num_players);
     if(!game.players) {
@@ -142,7 +141,7 @@ void *player_func(void *arg) {
     Player *p = (Player *)arg;
     Game *game = p->game;
 
-   while(game->curr_round <= game->total_rounds) {
+   while(game->curr_round < game->total_rounds) {
        //while you are not the dealer and the dealer is not done, wait on dealer.
         pthread_mutex_lock(&game->dealer_mut);
         while (p->id != game->curr_round && game->is_dealer_done == false) {
@@ -179,10 +178,10 @@ void *player_func(void *arg) {
             //dealer is finished dealing and round is over. Dealer wakes to reset state.
             pthread_barrier_wait(&game->players_done_bar);
             if (p->id == game->round_winner) {
-                fprintf(game->logfile, "Player %i: wins round %i\n", p->id + 1, game->curr_round);
+                fprintf(game->logfile, "Player %i: wins round %i\n", p->id + 1, game->curr_round + 1);
             }
             else {
-                fprintf(game->logfile, "Player %i: loses round %i\n", p->id + 1, game->curr_round);
+                fprintf(game->logfile, "Player %i: loses round %i\n", p->id + 1, game->curr_round + 1);
             }
             //players print win/loss messages:
             pthread_barrier_wait(&game->players_done_bar);
