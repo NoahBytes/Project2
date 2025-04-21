@@ -26,10 +26,9 @@ typedef struct Game {
     //Additionally, mutex ordering MUST be maintained. deck > bag > log > print...
     pthread_mutex_t turn_mut;
     pthread_cond_t turn_cond;
-    pthread_mutex_t done_mut;
-    pthread_cond_t done_cond;
     pthread_mutex_t dealer_mut;
     pthread_cond_t dealer_cond;
+    pthread_mutex_t chips_mut;
     pthread_barrier_t players_done_bar;
 
 
@@ -87,11 +86,10 @@ int main(int argc, char *argv[]) {
     //FIXME MUTEX, cond initialization
     pthread_mutex_init(&game.turn_mut, NULL);
     pthread_cond_init(&game.turn_cond, NULL);
-    pthread_mutex_init(&game.done_mut, NULL);
-    pthread_cond_init(&game.done_cond, NULL);
     pthread_mutex_init(&game.dealer_mut, NULL);
     pthread_cond_init(&game.dealer_cond, NULL);
     pthread_barrier_init(&game.players_done_bar, NULL, game.num_players);
+    pthread_mutex_init(&game.chips_mut, NULL);
 
 
     //Allocating player space and creating threads for each
@@ -121,11 +119,19 @@ int main(int argc, char *argv[]) {
         pthread_join(threads[i], NULL);
     }
     
-    //FIXME MUTEX DESTRUCTION
+    pthread_mutex_destroy(&game.turn_mut);
+    pthread_cond_destroy(&game.turn_cond);
+    pthread_mutex_destroy(&game.dealer_mut);
+    pthread_cond_destroy(&game.dealer_cond);
+    pthread_barrier_destroy(&game.players_done_bar);
+    pthread_mutex_destroy(&game.chips_mut);
+
+    fprintf(game.logfile, "Game over.\n");
 
     fclose(game.logfile);
     free(game.players);
     free(threads);
+
     printf("successful run!"); //FIXME delete later.
 
     return 0;
@@ -147,7 +153,7 @@ void *player_func(void *arg) {
        //while you are not the dealer and the dealer is not done, wait on dealer.
         pthread_mutex_lock(&game->dealer_mut);
         while (p->id != game->curr_round && game->is_dealer_done == false) {
-            printf("DEBUG: Player %i waiting on dealer.\n", p->id + 1); //FIXME testing.
+            printf("DEBUG: Player %i waiting on dealer.\n", p->id + 1);
             pthread_cond_wait(&game->dealer_cond, &game->dealer_mut);
         } 
         pthread_mutex_unlock(&game->dealer_mut);
@@ -173,32 +179,27 @@ void *player_func(void *arg) {
                 //draw card. compare card. set win state if applicable. discard if not.
                 draw_and_compare(game, p);
             }
-            else {
-                printf("DEBUG: Player %i loses :(\n", p->id);
-            }
             //increment curr_turn % players. release mutex.
             pthread_mutex_lock(&game->turn_mut);
             game->curr_turn = (game->curr_turn + 1) % game->num_players;
             pthread_cond_broadcast(&game->turn_cond);
             pthread_mutex_unlock(&game->turn_mut); //NOTE/Potential FIXME: Last player enters dealers turn......
             
-            //TODO: eat hot chip. wait for numplayers and then broadcast to dealer.... what next what next.
-            //FIXME need to implement printing protections
-            //eat_hot_chip(game, p);
+            eat_hot_chip(game, p);
 
             //dealer is finished dealing and round is over. Dealer wakes to reset state.
-            pthread_barrier_wait(&game->players_done_bar); //I could've abused barriers way more in this program. Tried not to. Very hard.
-            } //dealer exits here:
+            pthread_barrier_wait(&game->players_done_bar);
+            if (p->id == game->round_winner) {
+                fprintf(game->logfile, "Player %i: wins round %i\n", p->id + 1, game->curr_round);
+            }
+            else {
+                fprintf(game->logfile, "Player %i: loses round %i\n", p->id + 1, game->curr_round);
+            }
+            //players print win/loss messages:
+            pthread_barrier_wait(&game->players_done_bar);
+            fflush(game->logfile);
+        } //dealer exits here:
 
-        if (p->id == game->curr_round) {
-            printf("DEBUG: dealer resetting state.");
-            //FIXME finish implementing:
-            game->curr_round++;
-            game->curr_turn = p->id + 1;
-            //game->round_winner = -1; //FIXME This is a problem. printing before or after? Different way to reset? who knows.
-            game->players_done = 0;
-            game->is_dealer_done = false;
-        }
 
         //wait for dealer to reset state.
         pthread_barrier_wait(&game->players_done_bar);
@@ -212,27 +213,35 @@ void dealer_responsiblities(Game *game, Player *p) {
     //dealer func must initialize deck, shuffle, then wait for round to be over.
     //after last player plays or loses, dealer resets state.
     pthread_mutex_lock(&game->dealer_mut);
-    printf("DEBUG: Player %i made it to dealer", p->id + 1); //FIXME debugging
-    if (game->curr_round == 0) {
-        init_deck(game);
-    }
+    pthread_mutex_lock(&game->chips_mut);
+    game->round_winner = -1;
+    printf("DEBUG: Player %i made it to dealer \n", p->id + 1); //FIXME debugging
+    init_deck(game);
     shuffle_deck(game, &p->seed);
-    deal_cards(game, p->id);
-
+    if (game->curr_round == 0) {
+        deal_cards(game, p->id);
+        game->chips_bag = game->initial_bag;
+    }
+    fprintf(game->logfile, "BAG: %i chips left\n", game->chips_bag);
+    pthread_mutex_unlock(&game->chips_mut);
     //now, set curr_turn to next player in line.
     //turn doesn't have to be protected w/ mutex since everybody is stuck here.
+    pthread_mutex_lock(&game->turn_mut);
     game->curr_turn = (p->id + 1) % game->num_players;
-
+    pthread_mutex_unlock(&game->turn_mut);
 
     game->is_dealer_done = true;
     pthread_cond_broadcast(&game->dealer_cond);
     pthread_mutex_unlock(&game->dealer_mut);
 
-    //while players are still playing, go to sleep. 
-    pthread_barrier_wait(&game->players_done_bar);
+    pthread_barrier_wait(&game->players_done_bar); //waiting for players to finish game
+    pthread_barrier_wait(&game->players_done_bar); //waiting for players to finish printing win/loss
+    printf("DEBUG: dealer waking up! Resetting state. \n");
 
-    printf("DEBUG: dealer waking up! Continuing to normal thread to reset state.");
-
+    game->curr_round++;
+    game->curr_turn = (p->id + 1) % game->num_players;
+    game->players_done = 0;
+    game->is_dealer_done = false;
 }
 
 //Initializes deck with 52 cards. 4 suits, 13 cards each suit. 0's out 52 empty spaces.
@@ -253,7 +262,7 @@ void init_deck(Game *game) {
 /* shuffle_deck does what you'd expect. Called by a single dealer
    Note: deck must be locked and player's unique seed will be passed in. */
 void shuffle_deck(Game *game, unsigned int *seed) {
-    for (int i = 52-1; i > 0; i--)
+    for (int i = 51; i > 0; i--)
     {
         unsigned int j = xorshift32(seed) % (i+1);
         
@@ -310,13 +319,14 @@ void draw_and_compare(Game* game, Player *p) {
     fflush(game->logfile);
 
     if (drawn_card == game->greasy_card || p->hand == game->greasy_card) {
-        game->round_winner == p->id; //declare winner and continue
-        fprintf(game->logfile, "Player %i: hand (%i, %i) <> Greasy card is %i",
+        game->round_winner = p->id; //declare winner and continue
+        fprintf(game->logfile, "Player %i: hand (%i, %i) <> Greasy card is %i\n",
                 p->id + 1, p->hand, drawn_card, game->greasy_card);
     }
     else {
         discard(game, p, drawn_card); //or discard.
     }
+    fflush(game->logfile);
     printf("DEBUG: Finished drawing and comparing!\n");
 }
 
@@ -343,4 +353,16 @@ void eat_hot_chip(Game *game, Player *p) {
     //eat a random amount between 1 and 5.
     //if discover chips are not available, open new bag.
     //TODO: less critical. implementing later.
+    pthread_mutex_lock(&game->chips_mut);
+    int chips_eating = 1 + xorshift32(&p->seed) % 5;
+    if (game->chips_bag < chips_eating) {
+        fprintf(game->logfile, "Player %i: eats %i chips\n", p->id + 1, game->chips_bag);
+        game->chips_bag = game->initial_bag;
+    }
+    else {
+        fprintf(game->logfile, "Player %i: eats %i chips\n", p->id + 1, chips_eating);
+        game->chips_bag -= chips_eating;
+    }
+    fprintf(game->logfile, "BAG: %i chips left\n");
+    pthread_mutex_unlock(&game->chips_mut);
 }
