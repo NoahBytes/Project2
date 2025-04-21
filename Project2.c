@@ -22,7 +22,6 @@ typedef struct Game {
     int players_done; //tracks # of players finished with round.
     FILE *logfile; //needs to be opened and closed after running.
 
-    //FIXME add mutexes and conditional. must be initialized and destroyed in main.
     //Additionally, mutex ordering MUST be maintained. deck > bag > log > print...
     pthread_mutex_t turn_mut;
     pthread_cond_t turn_cond;
@@ -39,7 +38,6 @@ typedef struct Player {
     int id; //0-indexed, but print as n+1
     int hand; //current card. won't hold both for long so only 1.
     unsigned int seed; //unique to each player. FIXME needs to be Pointer (?)
-    bool done; //FIXME NEEDS TO BE RESET EACH ROUND!!! IMPORTANT!!!
     Game *game;
 } Player;
 
@@ -83,7 +81,7 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
     
-    //FIXME MUTEX, cond initialization
+    //MUTEX, cond initialization
     pthread_mutex_init(&game.turn_mut, NULL);
     pthread_cond_init(&game.turn_cond, NULL);
     pthread_mutex_init(&game.dealer_mut, NULL);
@@ -132,8 +130,6 @@ int main(int argc, char *argv[]) {
     free(game.players);
     free(threads);
 
-    printf("successful run!"); //FIXME delete later.
-
     return 0;
 }
 
@@ -146,14 +142,11 @@ the “Greasy Card”
 void *player_func(void *arg) {
     Player *p = (Player *)arg;
     Game *game = p->game;
-   //FIXME I'M BAD!!!!! Implement player logic
-   //FIXME how to handle the after-round print statements? Have players wait on dealer signaling game is done? Yes :thumbs up:
 
    while(game->curr_round < game->total_rounds) {
        //while you are not the dealer and the dealer is not done, wait on dealer.
         pthread_mutex_lock(&game->dealer_mut);
         while (p->id != game->curr_round && game->is_dealer_done == false) {
-            printf("DEBUG: Player %i waiting on dealer.\n", p->id + 1);
             pthread_cond_wait(&game->dealer_cond, &game->dealer_mut);
         } 
         pthread_mutex_unlock(&game->dealer_mut);
@@ -167,15 +160,12 @@ void *player_func(void *arg) {
             //if it's not your turn, wait until it is.
             pthread_mutex_lock(&game->turn_mut);
             while (p->id != game->curr_turn) {
-                printf("DEBUG: Player %i waiting on turn.\n", p->id + 1);
                 pthread_cond_wait(&game->turn_cond, &game->turn_mut);
             }
             pthread_mutex_unlock(&game->turn_mut);
-            printf("DEBUG: Player %i proceeding to turn.\n", p->id + 1); //FIXME debug
 
             //turn mutex is locked here. Nobody else is printing or playing. Safely manipulate deck and logfile until released.
             if (game->round_winner == -1) {
-                printf("DEBUG: Player %i made it to turn loop\n", p->id + 1); //FIXME debug
                 //draw card. compare card. set win state if applicable. discard if not.
                 draw_and_compare(game, p);
             }
@@ -205,17 +195,14 @@ void *player_func(void *arg) {
         pthread_barrier_wait(&game->players_done_bar);
     }
 
-   printf("DEBUG: Player %i exiting...\n", p->id + 1); //FIXME dealer is able to exit immediately after turn.
 }
 
-//FIXME: dealer needs to open bag of hot chips.
 void dealer_responsiblities(Game *game, Player *p) {
     //dealer func must initialize deck, shuffle, then wait for round to be over.
     //after last player plays or loses, dealer resets state.
     pthread_mutex_lock(&game->dealer_mut);
     pthread_mutex_lock(&game->chips_mut);
     game->round_winner = -1;
-    printf("DEBUG: Player %i made it to dealer \n", p->id + 1); //FIXME debugging
     init_deck(game);
     shuffle_deck(game, &p->seed);
     if (game->curr_round == 0) {
@@ -236,7 +223,6 @@ void dealer_responsiblities(Game *game, Player *p) {
 
     pthread_barrier_wait(&game->players_done_bar); //waiting for players to finish game
     pthread_barrier_wait(&game->players_done_bar); //waiting for players to finish printing win/loss
-    printf("DEBUG: dealer waking up! Resetting state. \n");
 
     game->curr_round++;
     game->curr_turn = (p->id + 1) % game->num_players;
@@ -310,7 +296,6 @@ void deal_cards(Game* game, int id) {
     }
 }
 
-//TODO implement
 void draw_and_compare(Game* game, Player *p) {
     fprintf(game->logfile, "Player %i: hand %i \n", p->id + 1, p->hand);
     int drawn_card = game->deck[game->deck_top];
@@ -327,7 +312,6 @@ void draw_and_compare(Game* game, Player *p) {
         discard(game, p, drawn_card); //or discard.
     }
     fflush(game->logfile);
-    printf("DEBUG: Finished drawing and comparing!\n");
 }
 
 
@@ -352,7 +336,7 @@ void discard(Game *game, Player *p, int drawn){
 void eat_hot_chip(Game *game, Player *p) {
     //eat a random amount between 1 and 5.
     //if discover chips are not available, open new bag.
-    //TODO: less critical. implementing later.
+
     pthread_mutex_lock(&game->chips_mut);
     int chips_eating = 1 + xorshift32(&p->seed) % 5;
     if (game->chips_bag < chips_eating) {
